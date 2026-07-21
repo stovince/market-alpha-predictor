@@ -1,10 +1,18 @@
 import os
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Tuple
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
+
+from indicators.compute_indicators import compute_technical_indicators
 
 
 RAW_DIR = os.path.join(os.path.dirname(__file__), os.pardir, "data", "raw")
@@ -34,7 +42,14 @@ def load_raw_csv(symbol: str) -> pd.DataFrame:
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Raw CSV for {symbol} not found at {csv_path}")
 
-    df = pd.read_csv(csv_path, parse_dates=["Date"], index_col="Date")
+    df = pd.read_csv(csv_path)
+    if "Date" not in df.columns:
+        if df.columns[0].lower() == "date":
+            df.columns = ["Date"] + list(df.columns[1:])
+        else:
+            raise ValueError("Raw CSV is missing a Date column")
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df = df.dropna(subset=["Date"]).set_index("Date")
     return df
 
 
@@ -46,26 +61,7 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["return"] = df["Close"].pct_change()
-    df["log_return"] = np.log1p(df["return"])
-    for window in [5, 10, 20]:
-        df[f"ma_{window}"] = df["Close"].rolling(window=window, min_periods=1).mean()
-        df[f"ema_{window}"] = df["Close"].ewm(span=window, adjust=False).mean()
-        df[f"vol_{window}"] = df["return"].rolling(window=window, min_periods=1).std()
-    df["volume_change"] = df["Volume"].pct_change()
-    df["volume_ma_10"] = df["Volume"].rolling(window=10, min_periods=1).mean()
-    df["macd"] = df["Close"].ewm(span=12, adjust=False).mean() - df["Close"].ewm(span=26, adjust=False).mean()
-    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
-    df["macd_hist"] = df["macd"] - df["macd_signal"]
-    delta = df["Close"].diff()
-    gain = np.where(delta > 0, delta, 0.0)
-    loss = np.where(delta < 0, -delta, 0.0)
-    avg_gain = pd.Series(gain).rolling(window=14, min_periods=1).mean()
-    avg_loss = pd.Series(loss).rolling(window=14, min_periods=1).mean()
-    rs = avg_gain / (avg_loss.replace(0, np.nan))
-    df["rsi_14"] = 100 - (100 / (1 + rs)).fillna(50)
-    df["return_1d"] = df["Close"].pct_change(periods=1)
-    df["return_2d"] = df["Close"].pct_change(periods=2)
+    df = compute_technical_indicators(df)
     df = df.dropna()
     return df
 
